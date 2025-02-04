@@ -1,17 +1,33 @@
-version: '3.8'
-
+version: "3.7"
 services:
-  db-mysql-latest:
-    image: mysql:latest
-    container_name: db-mysql-latest
-    environment:
-      MYSQL_ROOT_PASSWORD: bismillah
-      MYSQL_DATABASE: digikas
-      MYSQL_USER: user
-      MYSQL_PASSWORD: bismillah
-    ports:
-      - "6036:3306"
-    volumes:
-      # - ./mysql-data:/var/lib/mysq
-      - H:\WILLY\Kerjaan Kabayan\PROJECT\SUPERAPPS\mysql-data:/var/lib/mysql
+  app:
+    build:
+      args:
+        user: willy
+        uid: 1000
+      context: ./
+      dockerfile: Dockerfile
+    image: digikas-app
+    container_name: digikas-app
     restart: unless-stopped
+    working_dir: /var/www/
+    volumes:
+      - ./:/var/www
+    networks:
+      - digikas-app
+
+  nginx:
+    image: nginx:alpine
+    container_name: digikas-app-nginx
+    restart: unless-stopped
+    ports:
+      - 8092:80
+    volumes:
+      - ./:/var/www
+      - ./nginx:/etc/nginx/conf.d/
+    networks:
+      - digikas-app
+
+networks:
+  digikas-app:
+    driver: bridge
