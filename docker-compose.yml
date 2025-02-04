@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  db-mysql-latest:
+    image: mysql:latest
+    container_name: db-mysql-latest
+    environment:
+      MYSQL_ROOT_PASSWORD: bismillah
+      MYSQL_DATABASE: digikas
+      MYSQL_USER: user
+      MYSQL_PASSWORD: bismillah
+    ports:
+      - "6036:3306"
+    volumes:
+      # - ./mysql-data:/var/lib/mysq
+      - H:\WILLY\Kerjaan Kabayan\PROJECT\SUPERAPPS\mysql-data:/var/lib/mysql
+    restart: unless-stopped
