@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Helper\FileHelper;
 use App\Helper\MessageHelper;
 use App\Helper\ResponseFormatter;
+use App\Models\MasterKategori;
 use App\Models\MessageLogs;
 use App\Models\Transaction;
 use App\Models\User;
@@ -106,11 +107,11 @@ class TransactionController extends Controller
             // check the image is not empty
             try {
                 if ($image) {
-                
+
                     // $fileName = md5(time()) . '.' . $image->getClientOriginalExtension();
                     // $path = 'ocr/' . date('Y-m-d') . '/' . $fileName;
                     // Storage::disk('s3')->put($path, file_get_contents($image));
-    
+
                     // $result = FileHelper::getFullPathUrl($path);
                     // dd($result);
                     $data = [
@@ -133,21 +134,21 @@ class TransactionController extends Controller
                             ]
                         ]
                     ];
-    
+
                     // send request to api
                     $response = Http::withOptions(['verify' => false])->withHeaders([
                         'Authorization' => 'Bearer ' . env('API_CHATGPT_KEY'),
                     ])->post(env('API_CHATGPT'), $data);
-    
+
                     $response = $response->json()['choices'][0]['message']['content'];
                     $jsonString = str_replace(["```json", "```"], "", $response);
                     $data = json_decode($jsonString, true);
-    
+
                     $replyMessage = '';
                     foreach ($data as $item) {
                         $newTransaction = new Transaction();
                         $newTransaction->user_id = $checkUser->id;
-    
+
                         $name = $item['name'];
                         try {
                             $name .= ' x' . $item['qty'];
@@ -160,18 +161,17 @@ class TransactionController extends Controller
                         $newTransaction->type = 'out';
                         $newTransaction->transaction_date  = date('Y-m-d');
                         $newTransaction->save();
-    
+
                         $replyMessage .= $name . " dengan harga Rp. " . number_format($item['total_price']) . "\n";
                     }
-    
+
                     $replyMessage .= "\n📉 Pengeluaran berhasil di catat ✅";
-    
+
                     return $replyMessage;
                 }
             } catch (\Throwable $th) {
                 return 'Error Image';
             }
-            
         }
     }
 
@@ -325,14 +325,14 @@ class TransactionController extends Controller
         $userID = User::where('whatsapp_number', MessageHelper::formatWhatsappNumber($request->receiver))->first();
 
         $result = $this->checkMessage($request->message_type, $request->message, $request->receiver, $request->image);
-       
+
 
         $reply = '';
-        if($result == 'Error'){
-            $reply =MessageHelper::opening();
-        }else if($result == 'Error Image'){
+        if ($result == 'Error') {
+            $reply = MessageHelper::opening();
+        } else if ($result == 'Error Image') {
             $reply = 'Mohon maaf, gambar yang anda kirim tidak bisa dibaca, mohon kirim struk yang jelas';
-        }else{
+        } else {
             $reply = $result;
         }
 
@@ -350,6 +350,316 @@ class TransactionController extends Controller
         return ResponseFormatter::success(
             $data,
             'Pesan berhasil dikirim'
+        );
+    }
+
+    public function getSummay(Request $request)
+    {
+        $user = Auth()->user();
+        $q = Transaction::query();
+        $incomeq = clone $q;
+        $outcomeq = clone $q;
+
+        $incomeq->where('user_id', $user->id)->where('type', 'in');
+        $outcomeq->where('user_id', $user->id)->where('type', 'out');
+
+        $month = date('m');
+        $year = date('Y');
+
+        if ($request->periode) {
+            // ex : 2025-09
+            $periode = explode('-', $request->periode);
+            $month = $periode[1];
+            $year = $periode[0];
+            $incomeq->whereMonth('transaction_date', $month)->whereYear('transaction_date', $year);
+            $outcomeq->whereMonth('transaction_date', $month)->whereYear('transaction_date', $year);
+        }
+
+        $income = $incomeq->sum('price');
+        $outcome = $outcomeq->sum('price');
+
+        $balance = $income - $outcome;
+        $totalBalance = Transaction::where('user_id', $user->id)->sum('price');
+
+        $data = [
+            'income' => 'Rp. ' . number_format($income, '0', ',', '.'),
+            'outcome' => 'Rp. ' . number_format($outcome, '0', ',', '.'),
+            'balance' => 'Rp. ' . number_format($balance, '0', ',', '.'),
+            'total_balance' => 'Rp. ' . number_format($totalBalance, '0', ',', '.'),
+        ];
+
+        return ResponseFormatter::success(
+            $data,
+            'Data berhasil diambil'
+        );
+    }
+
+    public function getLatestTransaction()
+    {
+        // get latest transaction by user limit 5
+        $user = Auth()->user();
+        $data = Transaction::with('category')->where('user_id', $user->id)->orderBy('id', 'desc')->limit(5)->get();
+
+        return ResponseFormatter::success(
+            $data,
+            'Data berhasil diambil'
+        );
+    }
+
+    public function getCategory(Request $request)
+    {
+        $type = $request->type;
+
+        $data = MasterKategori::where('type', $type)->where('user_id', Auth()->user()->id)->get();
+
+        return ResponseFormatter::success(
+            $data,
+            'Data berhasil diambil'
+        );
+    }
+
+    public function createTransaction(Request $request)
+    {
+        $user = Auth()->user();
+
+        $data = $request->data;
+
+        // check data must be array
+        if (!is_array($data)) {
+            return ResponseFormatter::error(
+                ['error' => 'Data harus berupa array'],
+                'Validation Error',
+                422
+            );
+        }
+
+        // check data must be not empty
+        if (count($data) == 0) {
+            return ResponseFormatter::error(
+                ['error' => 'Data tidak boleh kosong'],
+                'Validation Error',
+                422
+            );
+        }
+
+        DB::beginTransaction();
+
+        try {
+            foreach ($data as $d) {
+                $category = MasterKategori::where('id', $d['category_id'])->where('user_id', $user->id)->first();
+                $newTransaction = new Transaction();
+                $newTransaction->user_id = $user->id;
+                $newTransaction->item = $d['description'] == '' ? $category->name : $d['description'];
+                $newTransaction->price = $d['price'];
+                $newTransaction->type = $d['type'];
+                $newTransaction->transaction_date  = $d['transaction_date'];
+                $newTransaction->category_id = $d['category_id'];
+                $newTransaction->save();
+            }
+
+            DB::commit();
+
+            return ResponseFormatter::success(
+                $data,
+                'Transaksi berhasil dibuat'
+            );
+        } catch (\Throwable $th) {
+            DB::rollBack();
+            return ResponseFormatter::error(
+                ['error' => $th->getMessage()],
+                'Error',
+                500
+            );
+        }
+    }
+
+    public function getHistory(Request $request)
+    {
+        $user = Auth()->user();
+        $q = Transaction::query();
+
+        $q->where('user_id', $user->id);
+
+        // last 30 days
+        $startDate = date('Y-m-d', strtotime('-30 days'));
+        $endDate = date('Y-m-d');
+
+        if (isset($request->transaction_date)) {
+            if ($request->transaction_date == 'last_30_day') {
+                $q->whereBetween('transaction_date', [$startDate, $endDate]);
+            } else if ($request->transaction_date == 'last_90_day') {
+                $startDate = date('Y-m-d', strtotime('-90 days'));
+                $q->whereBetween('transaction_date', [$startDate, $endDate]);
+            } else {
+                $q->where('transaction_date', $request->transaction_date);
+            }
+        }
+
+        if (isset($request->category_id)) {
+            $q->where('category_id', $request->category_id);
+        }
+
+        if (isset($request->type)) {
+            $q->where('type', $request->type);
+        }
+
+        if (isset($request->search)) {
+            $q->where('item', 'like', '%' . $request->search . '%');
+        }
+
+        $data = $q->with('category')->orderBy('id', 'desc')->get();
+
+        return ResponseFormatter::success(
+            $data,
+            'Data berhasil diambil'
+        );
+    }
+
+    public function getReportHarian(Request $request)
+    {
+        $user = Auth()->user();
+        $periode = $request->periode; // ex : 2025-02
+        $pisah = explode('-', $periode);
+        $month = $pisah[1];
+        $year = $pisah[0];
+
+        $q = Transaction::query();
+        $q->where('user_id', $user->id);
+        // get last day of periode
+        $queryIncome = clone $q;
+        $queryOutcome = clone $q;
+        $queryList = clone $q;
+
+        $queryIncome->whereMonth('transaction_date', $month)->whereYear('transaction_date', $year)->where('type', 'in');
+        $queryOutcome->whereMonth('transaction_date', $month)->whereYear('transaction_date', $year)->where('type', 'out');
+        $queryList->whereMonth('transaction_date', $month)->whereYear('transaction_date', $year)->orderBy('id', 'desc');
+
+        $income = $queryIncome->sum('price');
+        $outcome = $queryOutcome->sum('price');
+        $list = $queryList->get();
+
+        $dataChart = [];
+
+        for ($i = 1; $i <= date('t', strtotime($periode)); $i++) {
+            $incomes = Transaction::where('user_id', $user->id)->where('type', 'in')->whereDay('transaction_date', $i)->whereMonth('transaction_date', $month)->whereYear('transaction_date', $year)->sum('price');
+            $outcomes = Transaction::where('user_id', $user->id)->where('type', 'out')->whereDay('transaction_date', $i)->whereMonth('transaction_date', $month)->whereYear('transaction_date', $year)->sum('price');
+
+            $dataChart[] = [
+                'day' => $i,
+                'income' => $incomes,
+                'outcome' => $outcomes,
+            ];
+        }
+
+
+        $data = [
+            'income' => 'Rp. ' . number_format($income, '0', ',', '.'),
+            'outcome' => 'Rp. ' . number_format($outcome, '0', ',', '.'),
+            'list' => $list,
+            'chart' => $dataChart,
+        ];
+
+        return ResponseFormatter::success(
+            $data,
+            'Data berhasil diambil'
+        );
+    }
+
+    public function getReportMingguan(Request $request)
+    {
+        $user = Auth()->user();
+        $periode = $request->periode; // ex : 2025-02
+        $pisah = explode('-', $periode);
+        $month = $pisah[1];
+        $year = $pisah[0];
+
+        $q = Transaction::query();
+        $q->where('user_id', $user->id);
+        // get last day of periode
+        $queryIncome = clone $q;
+        $queryOutcome = clone $q;
+        $queryList = clone $q;
+
+        $queryIncome->whereMonth('transaction_date', $month)->whereYear('transaction_date', $year)->where('type', 'in');
+        $queryOutcome->whereMonth('transaction_date', $month)->whereYear('transaction_date', $year)->where('type', 'out');
+        $queryList->whereMonth('transaction_date', $month)->whereYear('transaction_date', $year)->orderBy('id', 'desc');
+
+        $income = $queryIncome->sum('price');
+        $outcome = $queryOutcome->sum('price');
+        $list = $queryList->get();
+
+        $dataChart = [];
+
+        // chart by week
+        $week = ['Minggu 1', 'Minggu 2', 'Minggu 3', 'Minggu 4', 'Minggu 5'];
+
+        for ($i = 1; $i <= 5; $i++) {
+            $incomes = Transaction::where('user_id', $user->id)->where('type', 'in')->whereBetween('transaction_date', [date('Y-m-d', strtotime($periode . '-01')), date('Y-m-d', strtotime($periode . '-07'))])->sum('price');
+            $outcomes = Transaction::where('user_id', $user->id)->where('type', 'out')->whereBetween('transaction_date', [date('Y-m-d', strtotime($periode . '-01')), date('Y-m-d', strtotime($periode . '-07'))])->sum('price');
+
+            $dataChart[] = [
+                'week' => $week[$i - 1],
+                'income' => $incomes,
+                'outcome' => $outcomes,
+            ];
+        }
+
+        $data = [
+            'income' => 'Rp. ' . number_format($income, '0', ',', '.'),
+            'outcome' => 'Rp. ' . number_format($outcome, '0', ',', '.'),
+            'list' => $list,
+            'chart' => $dataChart,
+        ];
+
+        return ResponseFormatter::success(
+            $data,
+            'Data berhasil diambil'
+        );
+    }
+
+    public function getReportBulanan(Request $request)
+    {
+        $user = Auth()->user();
+        $periode = $request->periode; // ex : 2025-02
+        $pisah = explode('-', $periode);
+        $month = $pisah[1];
+        $year = $pisah[0];
+
+        $q = Transaction::query();
+        $q->where('user_id', $user->id);
+        // get last day of periode
+        $queryIncome = clone $q;
+        $queryOutcome = clone $q;
+        $queryList = clone $q;
+
+        $queryIncome->whereMonth('transaction_date', $month)->whereYear('transaction_date', $year)->where('type', 'in');
+        $queryOutcome->whereMonth('transaction_date', $month)->whereYear('transaction_date', $year)->where('type', 'out');
+        $queryList->whereMonth('transaction_date', $month)->whereYear('transaction_date', $year)->orderBy('id', 'desc');
+
+        $income = $queryIncome->sum('price');
+        $outcome = $queryOutcome->sum('price');
+        $list = $queryList->get();
+
+        $dataChart = [];
+
+
+        $dataChart[] = [
+            'periode' => $periode,
+            'income' => $income,
+            'outcome' => $outcome,
+        ];
+
+
+        $data = [
+            'income' => 'Rp. ' . number_format($income, '0', ',', '.'),
+            'outcome' => 'Rp. ' . number_format($outcome, '0', ',', '.'),
+            'list' => $list,
+            'chart' => $dataChart,
+        ];
+
+        return ResponseFormatter::success(
+            $data,
+            'Data berhasil diambil'
         );
     }
 }

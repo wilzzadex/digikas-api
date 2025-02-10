@@ -19,7 +19,7 @@ class ResponseFormatter
     {
         self::$response['meta']['message'] = $message;
         self::$response['data'] = $data;
-        self::$response['data_static'] = $data_static;
+        self::$response['time'] = date('Y-m-d H:i:s');
 
 
         return response()->json(self::$response, self::$response['meta']['code']);

@@ -7,6 +7,7 @@ use App\Models\OTP;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Validator;
 
 class AuthController extends Controller
@@ -50,8 +51,26 @@ class AuthController extends Controller
         $userOtp->expired_at = date('Y-m-d H:i:s', strtotime('+5 minutes'));
         $userOtp->save();
 
+        // send otp to user via whatsapp
+        $data = [
+            'clientId' => env('CLIENT_ID'),
+            'number' => $request->whatsapp_number,
+            'message' => 'Kode OTP Anda adalah *' . $otp . '*',
+        ];
+
+        try {
+            $response = Http::withOptions(['verify' => false])->post(env('WA_GATEWAY_URL') . '/send-message', $data);
+            $dataRes['otp_status'] = $response->json();
+        } catch (\Throwable $th) {
+            $dataRes['otp_status'] = $th->getMessage();
+        }
+
+        
+
+
+        $dataRes['otp'] = $otp;
         return ResponseFormatter::success(
-            ['otp' => $otp],
+            $dataRes,
             'OTP berhasil dikirim'
         );
     }
